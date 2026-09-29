@@ -25,6 +25,7 @@ h1{font-size:20px;margin:0;line-height:1.15}
 .tagline{color:var(--muted);font-size:13px}
 .pill{font-size:12px;font-weight:600;padding:4px 10px;border-radius:99px;background:var(--okbg);color:var(--ok);white-space:nowrap}
 .pill.warn{background:var(--warnbg);color:var(--danger)}
+.snd{padding:6px 10px;font-size:16px;border-radius:99px;line-height:1}
 .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px}
 .stat{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 10px;text-align:center}
 .stat .n{font-size:26px;font-weight:700;line-height:1.1}
@@ -60,7 +61,8 @@ details summary{cursor:pointer;font-weight:600}
 <div class="wrap">
   <header>
     <div class="logo" id="logo"></div>
-    <div class="t"><h1 id="appName">Barcode Scanner</h1><div class="tagline">by Devesh</div></div>
+    <div class="t"><h1 id="appName">Barcode Scanner</h1><div class="tagline">Scan → saved to your Google Sheet</div></div>
+    <button id="snd" class="snd" aria-label="Sound on or off" title="Sound">🔊</button>
     <span class="pill" id="pill">Not set up</span>
   </header>
 
@@ -200,10 +202,32 @@ function getScanner() {
   }
   return scanner;
 }
+let soundOn = get('soundOn', true);
+let actx = null;
+function unlockAudio() { // browsers only allow sound after a tap, so prepare it on taps
+  try {
+    actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+    if (actx.state === 'suspended') actx.resume();
+  } catch (e) {}
+}
+function tone(freq, start, dur, vol) {
+  const o = actx.createOscillator(), g = actx.createGain(), t = actx.currentTime + start;
+  o.type = 'square'; o.frequency.value = freq;
+  g.gain.setValueAtTime(vol, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  o.connect(g); g.connect(actx.destination);
+  o.start(t); o.stop(t + dur + 0.02);
+}
 function beep() {
-  try { const c = beep.c || (beep.c = new (window.AudioContext || window.webkitAudioContext)()); const o = c.createOscillator(), g = c.createGain(); o.frequency.value = 880; g.gain.value = .08; o.connect(g); g.connect(c.destination); o.start(); o.stop(c.currentTime + .08); } catch (e) {}
+  if (soundOn) {
+    try { unlockAudio(); tone(2000, 0, 0.16, 0.3); } catch (e) {}
+  }
   try { navigator.vibrate && navigator.vibrate(60); } catch (e) {}
 }
+document.addEventListener('pointerdown', unlockAudio);
+function paintSnd() { $('snd').textContent = soundOn ? '🔊' : '🔇'; }
+$('snd').onclick = () => { soundOn = !soundOn; put('soundOn', soundOn); paintSnd(); if (soundOn) beep(); };
+paintSnd();
 function onScan(text) {
   const now = Date.now();
   if (text === lastCode && now - lastAt < 3000) return; // same code still in view = one scan
@@ -225,7 +249,7 @@ async function stop() {
   try { if (scanner && running) await scanner.stop(); } catch (e) {}
   running = false; $('reader').hidden = true; $('idle').hidden = false; $('toggle').textContent = 'Start camera'; setStatus('Camera stopped.');
 }
-$('toggle').onclick = () => running ? stop() : start();
+$('toggle').onclick = () => { unlockAudio(); running ? stop() : start(); };
 $('photoBtn').onclick = () => $('file').click();
 $('file').onchange = async e => {
   const f = e.target.files[0]; e.target.value = ''; if (!f) return;
