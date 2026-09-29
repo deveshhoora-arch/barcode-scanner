@@ -1,0 +1,26 @@
+<!doctype html>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<div id="reader" style="width:100%"></div>
+<p id="msg">Point the camera at a barcode</p>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
+<script>
+const SHEET_URL = "https://script.google.com/macros/s/AKfycbwfMcBySZb5RTNcwwjk5axzzRVxOk_Yn8Km5IRf9VEi6L30S-9waJLCGAEo-jVY2Zg4sg/exec";
+let last = "", lastTime = 0;
+
+const scanner = new Html5Qrcode("reader");
+scanner.start(
+  { facingMode: "environment" },
+  { fps: 10, qrbox: { width: 300, height: 150 } },
+  code => {
+    if (code === last && Date.now() - lastTime < 3000) return; // same code still in view
+    last = code; lastTime = Date.now();
+    fetch(SHEET_URL, {
+      method: "POST",
+      mode: "no-cors",
+      body: new URLSearchParams({ barcode: code })
+    });
+    document.getElementById("msg").textContent = "Sent: " + code;
+  }
+);
+</script>
