@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Scan dashboard</title>
+<style>
+:root{--bg:#f4f6f9;--card:#fff;--text:#14171a;--muted:#6b7280;--line:#e3e6ea;--accent:#0b6bcb;--on-accent:#fff;--danger:#c0362c}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1215;--card:#191d22;--text:#eceff2;--muted:#9aa3ad;--line:#2a3037;--accent:#5aa2f0;--on-accent:#08111c;--danger:#ff7a6e}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:env(safe-area-inset-top,0) 0 env(safe-area-inset-bottom,0)}
+.wrap{max-width:980px;margin:0 auto;padding:18px}
+header{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+h1{font-size:24px;margin:0}
+h2{font-size:15px;margin:0 0 12px;color:var(--muted);font-weight:600}
+.sub{color:var(--muted);font-size:13px;margin:2px 0 0}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px}
+button{font:inherit;font-weight:600;border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:10px;padding:8px 14px;cursor:pointer}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+input{font:inherit;padding:9px 12px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--text);min-width:0}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:14px}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px}
+.stat .n{font-size:30px;font-weight:700;line-height:1.1}
+.stat .l{color:var(--muted);font-size:13px;margin-top:4px}
+.bars{display:flex;align-items:flex-end;gap:10px;height:150px}
+.bar{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;font-size:12px;color:var(--muted)}
+.bar i{display:block;width:100%;max-width:56px;background:var(--accent);border-radius:6px 6px 0 0;min-height:2px}
+.bar b{color:var(--text);font-size:13px;margin-bottom:3px}
+.bar span{margin-top:6px;white-space:nowrap}
+.tools{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+.tools input{flex:1;min-width:180px}
+.scroll{overflow-x:auto}
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:10px 8px;border-top:1px solid var(--line);white-space:nowrap}
+th{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.04em;cursor:pointer;border-top:0;user-select:none}
+.code{font-family:ui-monospace,Menlo,Consolas,monospace;font-weight:600}
+.ago{color:var(--muted);font-size:13px}
+.err{color:var(--danger);font-size:14px;margin:8px 0 0}
+.empty{text-align:center;color:var(--muted);padding:18px}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div><h1>Scan dashboard</h1><p class="sub" id="upd">Not connected</p></div>
+    <div class="row"><button id="refresh">Refresh</button><button id="cfg">Settings</button></div>
+  </header>
+
+  <div class="card" id="setup" hidden>
+    <h2>Connect to your sheet</h2>
+    <div class="row" style="margin-bottom:8px"><input id="url" style="flex:1" placeholder="Web app URL (ends in /exec)"></div>
+    <div class="row"><input id="key" style="flex:1" type="password" placeholder="Dashboard password (READ_KEY)"><button class="primary" id="connect">Connect</button></div>
+    <p class="err" id="err" hidden></p>
+  </div>
+
+  <div id="main" hidden>
+    <div class="stats">
+      <div class="stat"><div class="n" id="sTotal">0</div><div class="l">Barcodes in sheet</div></div>
+      <div class="stat"><div class="n" id="sToday">0</div><div class="l">Scanned today</div></div>
+      <div class="stat"><div class="n" id="sLast" style="font-size:20px;padding-top:6px">–</div><div class="l">Latest scan</div></div>
+    </div>
+    <div class="card"><h2>Barcodes last scanned, past 7 days</h2><div class="bars" id="bars"></div></div>
+    <div class="card">
+      <div class="tools"><input id="q" placeholder="Search barcode…" autocomplete="off"><span class="ago" id="count" style="align-self:center"></span></div>
+      <div class="scroll"><table><thead><tr><th data-s="code">Barcode</th><th data-s="time">Last scanned</th></tr></thead><tbody id="body"></tbody></table></div>
+      <div class="row" style="justify-content:center;margin-top:10px"><button id="more" hidden>Show more</button></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const st = { get: k => { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} } };
+let url = st.get('dashUrl'), key = st.get('dashKey'), rows = [], sortBy = 'time', dir = -1, shown = 100;
+
+function showSetup(msg) {
+  $('setup').hidden = false; $('url').value = url; $('key').value = key;
+  $('err').hidden = !msg; $('err').textContent = msg || '';
+}
+async function load() {
+  if (!url) { showSetup(); return; }
+  try {
+    const r = await fetch(url + '?action=list&key=' + encodeURIComponent(key));
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error === 'wrong key' ? 'Wrong password.' : (j.error || 'Request failed'));
+    rows = j.rows || [];
+    $('setup').hidden = true; $('main').hidden = false;
+    $('upd').textContent = 'Updated ' + new Date().toLocaleTimeString();
+    render();
+  } catch (e) {
+    showSetup(e.message === 'Failed to fetch' || e.name === 'TypeError'
+      ? 'Could not reach the URL. Check it, and that the script is deployed with access set to "Anyone", using a New version.'
+      : e.message);
+  }
+}
+const dayStart = t => { const d = new Date(t); d.setHours(0, 0, 0, 0); return d.getTime(); };
+function ago(t) {
+  const m = Math.floor((Date.now() - t) / 60000);
+  if (m < 1) return 'just now'; if (m < 60) return m + ' min ago';
+  if (m < 1440) return Math.floor(m / 60) + ' h ago';
+  return Math.floor(m / 1440) + ' d ago';
+}
+function render() {
+  const timed = rows.filter(r => r.time);
+  const today = dayStart(Date.now());
+  $('sTotal').textContent = rows.length;
+  $('sToday').textContent = timed.filter(r => r.time >= today).length;
+  const latest = timed.reduce((a, r) => Math.max(a, r.time), 0);
+  $('sLast').textContent = latest ? new Date(latest).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '–';
+
+  const days = [];
+  for (let i = 6; i >= 0; i--) { const s = dayStart(today - i * 86400000 + 43200000); days.push({ s, n: timed.filter(r => r.time >= s && r.time < s + 86400000).length }); }
+  const max = Math.max(1, ...days.map(d => d.n));
+  const bars = $('bars'); bars.textContent = '';
+  days.forEach(d => {
+    const b = document.createElement('div'); b.className = 'bar';
+    const n = document.createElement('b'); n.textContent = d.n;
+    const i = document.createElement('i'); i.style.height = Math.round(d.n / max * 100) + '%';
+    const l = document.createElement('span'); l.textContent = new Date(d.s).toLocaleDateString([], { weekday: 'short', day: 'numeric' });
+    b.append(n, i, l); bars.appendChild(b);
+  });
+
+  const q = $('q').value.trim().toLowerCase();
+  const list = rows.filter(r => !q || r.code.toLowerCase().includes(q)).sort((a, b) =>
+    sortBy === 'code' ? dir * a.code.localeCompare(b.code, undefined, { numeric: true }) : dir * ((a.time || 0) - (b.time || 0)));
+  $('count').textContent = list.length + ' shown';
+  const body = $('body'); body.textContent = '';
+  if (!list.length) { const tr = document.createElement('tr'), td = document.createElement('td'); td.colSpan = 2; td.className = 'empty'; td.textContent = rows.length ? 'No matches.' : 'No scans yet.'; tr.appendChild(td); body.appendChild(tr); }
+  list.slice(0, shown).forEach(r => {
+    const tr = document.createElement('tr');
+    const a = document.createElement('td'); a.className = 'code'; a.textContent = r.code;
+    const b = document.createElement('td');
+    b.textContent = r.time ? new Date(r.time).toLocaleString([], { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '–';
+    if (r.time) { const s = document.createElement('span'); s.className = 'ago'; s.textContent = '  · ' + ago(r.time); b.appendChild(s); }
+    tr.append(a, b); body.appendChild(tr);
+  });
+  $('more').hidden = list.length <= shown;
+  document.querySelectorAll('th').forEach(th => { const base = th.dataset.s === 'code' ? 'Barcode' : 'Last scanned'; th.textContent = base + (th.dataset.s === sortBy ? (dir > 0 ? ' ▲' : ' ▼') : ''); });
+}
+document.querySelectorAll('th').forEach(th => th.onclick = () => { const s = th.dataset.s; if (sortBy === s) dir = -dir; else { sortBy = s; dir = s === 'time' ? -1 : 1; } render(); });
+$('q').addEventListener('input', () => { shown = 100; render(); });
+$('more').onclick = () => { shown += 200; render(); };
+$('refresh').onclick = load;
+$('cfg').onclick = () => showSetup();
+$('connect').onclick = () => {
+  url = $('url').value.trim(); key = $('key').value;
+  if (!/^https:\/\/script\.google\.com\/.+\/exec/.test(url)) { showSetup('That doesn\'t look like a Web app URL ending in /exec.'); return; }
+  st.set('dashUrl', url); st.set('dashKey', key); load();
+};
+setInterval(() => { if (!document.hidden && url && !$('main').hidden) load(); }, 30000);
+load();
+</script>
+</body>
+</html>
