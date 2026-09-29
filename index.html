@@ -61,14 +61,14 @@ details summary{cursor:pointer;font-weight:600}
 <div class="wrap">
   <header>
     <div class="logo" id="logo"></div>
-    <div class="t"><h1 id="appName">Barcode Scanner</h1><div class="tagline">by Devesh</div></div>
+    <div class="t"><h1 id="appName">Barcode Scanner</h1><div class="tagline">Scan → saved to your Google Sheet</div></div>
     <button id="snd" class="snd" aria-label="Sound on or off" title="Sound">🔊</button>
     <span class="pill" id="pill">Not set up</span>
   </header>
 
   <div class="stats">
-    <div class="stat"><div class="n" id="sTotal">0</div><div class="l">Total scans</div></div>
-    <div class="stat"><div class="n" id="sToday">0</div><div class="l">Today</div></div>
+    <div class="stat"><div class="n" id="sTotal">0</div><div class="l">Unique barcodes</div></div>
+    <div class="stat"><div class="n" id="sToday">0</div><div class="l">Unique today</div></div>
     <div class="stat"><div class="n" id="sLast">–</div><div class="l">Last scan</div></div>
   </div>
 
@@ -102,6 +102,10 @@ details summary{cursor:pointer;font-weight:600}
     <p class="meta">Paste the Web app URL from your Apps Script deployment (ends in /exec).</p>
     <div class="row">
       <input type="url" id="url" placeholder="https://script.google.com/macros/s/.../exec">
+    </div>
+    <p class="meta">Optional: your dashboard password (READ_KEY) so the counts match your sheet exactly.</p>
+    <div class="row">
+      <input type="password" id="rkey" placeholder="Dashboard password (optional)">
       <button id="saveUrl">Save &amp; test</button>
     </div>
   </details>
@@ -118,8 +122,11 @@ const get = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; }
 const put = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };
 let url = get('sheetUrl', '');
 let log = get('scanLog', []); // {id, code, ts, sent}
-let stats = get('scanStats', { total: 0, day: '', today: 0, lastTs: 0 });
-if (!stats.total && log.length) { stats.total = log.length; stats.lastTs = log[0].ts; }
+let stats = get('scanStats', { lastTs: 0 });
+let seen = get('seenCodes', null); // barcode -> time of its latest scan (one entry per unique barcode)
+if (!seen) { seen = {}; log.forEach(s => { seen[s.code] = Math.max(seen[s.code] || 0, s.ts); }); put('seenCodes', seen); }
+if (!stats.lastTs && log.length) stats.lastTs = log[0].ts;
+let readKey = get('readKey', '');
 const dayKey = t => { const d = new Date(t); return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate(); };
 
 document.title = APP_NAME; $('appName').textContent = APP_NAME;
@@ -132,8 +139,9 @@ const fmt = t => new Date(t).toLocaleString([], { day: '2-digit', month: 'short'
 
 function render() {
   const pending = log.filter(s => !s.sent).length;
-  $('sTotal').textContent = stats.total;
-  $('sToday').textContent = stats.day === dayKey(Date.now()) ? stats.today : 0;
+  const codes = Object.keys(seen), todayKey = dayKey(Date.now());
+  $('sTotal').textContent = codes.length;
+  $('sToday').textContent = codes.filter(c => seen[c] && dayKey(seen[c]) === todayKey).length;
   $('sLast').textContent = stats.lastTs ? new Date(stats.lastTs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '–';
   const pill = $('pill');
   pill.className = 'pill' + (!url || pending ? ' warn' : '');
@@ -176,15 +184,16 @@ async function flush() {
   }
   flushing = false;
   let n = 0; log = log.filter(s => !s.sent || ++n <= 50); put('scanLog', log); render();
+  syncFromSheet();
 }
 
 function record(code) {
   code = String(code || '').trim();
   if (!code) return;
   if (!url) { setStatus('Open Setup and paste your Web app URL first.', true); $('setup').open = true; return; }
-  const now = Date.now(), dk = dayKey(now);
-  if (stats.day !== dk) { stats.day = dk; stats.today = 0; }
-  stats.total++; stats.today++; stats.lastTs = now; put('scanStats', stats);
+  const now = Date.now();
+  seen[code] = now; put('seenCodes', seen);
+  stats.lastTs = now; put('scanStats', stats);
   const id = (crypto.randomUUID && crypto.randomUUID()) || now + '-' + Math.random().toString(36).slice(2);
   log.unshift({ id, code, ts: now, sent: false });
   put('scanLog', log); render(); beep(); setStatus('Scanned ' + code);
@@ -263,7 +272,22 @@ $('addBtn').onclick = addManual;
 $('manual').addEventListener('keydown', e => { if (e.key === 'Enter') addManual(); });
 
 // ---- setup ----
-$('url').value = url;
+let lastSync = 0;
+async function syncFromSheet(verbose) { // makes the counts match the sheet (needs the optional password)
+  if (!url || !readKey) return;
+  if (!verbose && Date.now() - lastSync < 60000) return;
+  const t0 = lastSync = Date.now();
+  try {
+    const j = await (await fetch(url + '?action=list&key=' + encodeURIComponent(readKey))).json();
+    if (!j.ok) { if (verbose) setStatus(j.error === 'wrong key' ? 'That password does not match READ_KEY in your script.' : 'Could not read the sheet.', true); return; }
+    const next = {};
+    j.rows.forEach(r => { next[r.code] = r.time || 0; });
+    log.filter(s => !s.sent || s.ts >= t0).forEach(s => { next[s.code] = Math.max(next[s.code] || 0, s.ts); });
+    seen = next; put('seenCodes', seen); render();
+    if (verbose) setStatus('Connected. Counts now match your sheet (' + Object.keys(seen).length + ' barcodes).');
+  } catch (e) { if (verbose) setStatus('Could not read the sheet right now.', true); }
+}
+$('url').value = url; $('rkey').value = readKey;
 if (!url) $('setup').open = true;
 $('saveUrl').onclick = async () => {
   const u = $('url').value.trim();
@@ -271,7 +295,9 @@ $('saveUrl').onclick = async () => {
   try {
     const j = await (await fetch(u)).json();
     if (!j.ok) throw new Error();
-    url = u; put('sheetUrl', u); setStatus('Connected. Scans will go to your sheet.'); $('setup').open = false; render(); flush();
+    url = u; put('sheetUrl', u); readKey = $('rkey').value; put('readKey', readKey);
+    setStatus('Connected. Scans will go to your sheet.'); $('setup').open = false; render(); flush();
+    if (readKey) syncFromSheet(true);
   } catch (e) { setStatus('Could not reach that URL. Deploy as Web app with access set to "Anyone", then try again.', true); }
 };
 $('retry').onclick = flush;
